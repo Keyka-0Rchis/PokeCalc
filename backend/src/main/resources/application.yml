@@ -1,0 +1,18 @@
+spring:
+  application:
+    name: damagecalc
+  datasource:
+    url: jdbc:postgresql://localhost:5432/damagecalc
+    username: postgres
+    password: ${DB_PASSWORD}
+  flyway:
+    enabled: true
+    # V1__init.sql(スキーマ)→ R__SeedMaster(CSVの投入)の順に実行される
+    locations: classpath:db/migration
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+
+server:
+  port: 8080

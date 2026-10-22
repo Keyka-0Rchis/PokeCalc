@@ -1,58 +1,55 @@
 -- =====================================================================
 -- V1__init.sql  ポケモンチャンピオンズ ダメージ計算ツール 初期スキーマ
+--
 -- 方針:
---  * ENUM型・CHECK制約は原則使わない(将来のギミック追加をマイグレーション無しで可能にする)
---    値の検証はアプリケーション側(ドメイン層)で行う
---  * 倍率は4096基準の整数で保持する(丸め誤差回避)
---  * 効果データの条件は condition_type + params(jsonb) で柔軟に保持する
+--  * ENUM型・CHECK制約は使わない(将来のギミック追加をマイグレーション無しで可能にする)。
+--    値の検証はシード読み込み時(MasterSeedParser)とドメイン層で行う。
+--  * 倍率は4096基準の整数で保持する(丸め誤差回避)。
+--  * マスタの主キーはCSVのidをそのまま使う。一度取り込んだidは変更せず、追加は末尾のみ。
+--    (将来パーティ保存などがformのidを参照するため)
+--  * マスタ表の中身はR__SeedMaster(繰り返しマイグレーション)がCSVから投入する。
 -- =====================================================================
 
 -- ---------------------------------------------------------------------
--- タイプ
+-- タイプ(id 19 =「ー」(タイプなし)も登録する。「もえつきる」後などの状態に使う)
 -- ---------------------------------------------------------------------
 create table element_type (
     id    smallint primary key,
-    name  text not null unique          -- 例: ほのお
+    name  text not null unique
 );
 
 -- タイプ相性(攻撃タイプ x 防御タイプ)。倍率は 0 / 0.5 / 1 / 2
 create table type_effectiveness (
-    attack_type_id  smallint not null references element_type (id),
-    defend_type_id  smallint not null references element_type (id),
+    attack_type_id  smallint      not null references element_type (id),
+    defend_type_id  smallint      not null references element_type (id),
     multiplier      numeric(3, 2) not null,
     primary key (attack_type_id, defend_type_id)
 );
 
 -- ---------------------------------------------------------------------
--- ポケモン
+-- ポケモン(1行=1フォーム。通常・リージョン・フォルム違い・メガを同列に扱う)
 -- ---------------------------------------------------------------------
-create table pokemon (
-    id         int primary key,
-    dex_no     int  not null,
-    name       text not null,
-    name_kana  text not null            -- ひらがな。前方一致サジェスト用(正規化はアプリ側)
-);
-create index idx_pokemon_name_kana on pokemon (name_kana);
-
--- フォーム(通常・メガ・リージョンフォーム等を同列に扱う)
 create table pokemon_form (
-    id          int primary key,
-    pokemon_id  int  not null references pokemon (id),
-    form_name   text not null,          -- 例: 通常, メガ, メガX
-    is_default  boolean not null default false,
-    is_mega     boolean not null default false,
-    base_hp     smallint not null,
-    base_atk    smallint not null,
-    base_def    smallint not null,
-    base_spa    smallint not null,
-    base_spd    smallint not null,
-    base_spe    smallint not null,
-    weight_kg   numeric(6, 1),          -- 重さ依存技(けたぐり等)用
-    sort_order  int not null default 0
+    id           int         primary key,
+    dex_no       int         not null,              -- 全国図鑑番号
+    name         text        not null,              -- 名前
+    name_kana    text        not null,              -- 前方一致サジェスト用(KanaNormalizerで正規化)
+    region       varchar(16) not null default '',   -- alola / galar / hisui / paldea / ''
+    variant_key  varchar(32) not null default '',   -- CSVのform列。male / origin / terras_grass ... / ''
+    mega_kind    varchar(8)  not null default '',   -- CSVのmega列。x / y / z ... / ''(メガ以外)
+    base_h       smallint    not null,              -- HP
+    base_a       smallint    not null,              -- 攻撃
+    base_b       smallint    not null,              -- 防御
+    base_c       smallint    not null,              -- 特攻
+    base_d       smallint    not null,              -- 特防
+    base_s       smallint    not null               -- 素早さ
 );
-create index idx_pokemon_form_pokemon on pokemon_form (pokemon_id);
+create index idx_pokemon_form_dex_no    on pokemon_form (dex_no);
+create index idx_pokemon_form_name_kana on pokemon_form (name_kana);
+-- 取り込みミスの検知用。キーが重複するデータは投入できない
+create unique index uq_pokemon_form_key on pokemon_form (dex_no, region, variant_key, mega_kind);
 
--- フォームのタイプ(slot: 1=第1タイプ, 2=第2タイプ)
+-- フォームのタイプ(slot: 1=第1タイプ, 2=第2タイプ。単タイプは slot 2 を作らない)
 create table pokemon_form_type (
     form_id  int      not null references pokemon_form (id),
     slot     smallint not null,
@@ -61,18 +58,18 @@ create table pokemon_form_type (
 );
 
 -- ---------------------------------------------------------------------
--- 特性
+-- 特性(同名の特性がありうるため name は unique にしない(じんばいったい)。識別はidで行う)
 -- ---------------------------------------------------------------------
 create table ability (
-    id    int primary key,
-    name  text not null,
-    name_kana text not null
+    id         int  primary key,
+    name       text not null,
+    name_kana  text not null
 );
 
 -- フォームが取りうる特性(計算画面で選択肢として提示する)
 create table pokemon_form_ability (
-    form_id     int not null references pokemon_form (id),
-    ability_id  int not null references ability (id),
+    form_id     int     not null references pokemon_form (id),
+    ability_id  int     not null references ability (id),
     is_hidden   boolean not null default false,
     primary key (form_id, ability_id)
 );
@@ -80,62 +77,79 @@ create table pokemon_form_ability (
 -- ---------------------------------------------------------------------
 -- 技
 -- ---------------------------------------------------------------------
+-- 技のフラグの種類(contact, slice, sound, ...)。効果の条件 flag_id:N はこのidを指す
+create table move_flag_type (
+    id    smallint primary key,
+    name  text not null unique
+);
+
 create table move (
-    id         int primary key,
-    name       text not null,
-    name_kana  text not null,
+    id         int      primary key,
+    name       text     not null,
+    name_kana  text     not null,
     type_id    smallint not null references element_type (id),
-    category   varchar(16) not null,     -- PHYSICAL / SPECIAL / STATUS (アプリ側で検証)
-    power      smallint,                 -- 変動威力・威力なしは null
-    min_hits   smallint not null default 1,
-    max_hits   smallint not null default 1,
-    priority   smallint not null default 0,
-    rule_key   varchar(48)               -- 特殊裁定(MoveRule)の識別子。通常技は null
+    category   varchar(16) not null,    -- PHYSICAL / SPECIAL / STATUS
+    power      smallint,                -- 変動威力・威力なしは null
+    min_hits   smallint not null default 1, -- 連続技の最小ヒット数。単発技は 1
+    max_hits   smallint not null default 1, -- 連続技の最大ヒット数。単発技は 1
+    rule_key   varchar(48)              -- 特殊裁定(MoveRule)の識別子。通常技は null
 );
 create index idx_move_name_kana on move (name_kana);
 
--- 技の追加情報(CONTACT, SLICING, BALL, WAVE, PUNCH, SOUND, BITE, PULSE ...)
 create table move_flag (
-    move_id  int         not null references move (id),
-    flag     varchar(24) not null,
-    primary key (move_id, flag)
+    move_id  int      not null references move (id),
+    flag_id  smallint not null references move_flag_type (id),
+    primary key (move_id, flag_id)
 );
 
 -- ---------------------------------------------------------------------
 -- 持ち物
 -- ---------------------------------------------------------------------
 create table item (
-    id         int primary key,
+    id         int  primary key,
     name       text not null,
     name_kana  text not null
 );
 
--- 持ち物の効果。1つの持ち物が複数効果を持てる
-create table item_effect (
-    id               int primary key,
-    item_id          int         not null references item (id),
-    effect_type      varchar(32) not null,   -- POWER_MOD, ATK_MOD, DEF_MOD, TYPE_BOOST, FINAL_MOD ...
-    phase            varchar(32) not null,   -- BASE_POWER, ATTACK_STAT, DEFENSE_STAT, FINAL_DAMAGE ...
-    multiplier_4096  int         not null,   -- 4096 = 1.0倍
-    condition_type   varchar(32),            -- null = 無条件
-    params           jsonb                   -- 条件パラメータ(例: {"typeId": 10})
-);
-create index idx_item_effect_item on item_effect (item_id);
-
--- 特性の効果(item_effect と同構造)
+-- ---------------------------------------------------------------------
+-- 効果(特性・持ち物)。仕様は docs/master-data-spec.md を参照
+--   seq             : CSVの行順。同一phase内の適用順に使う
+--   effect_target   : own_move_power, damage, weather ... (RULEで対象なしの場合は null)
+--   kind            : MULTIPLY / REPLACE / RULE
+--   multiplier_4096 : 4096 = 1.0倍。REPLACEでは置き換え後の絶対値。対象なしは null
+--   conditions      : 条件式(';'区切りでAND)。無条件は null
+--   phase           : power_start / power_final / status_final / damage_final。無い場合は null
+--   params          : from / to / rule など条件ではないパラメータ(jsonb)
+-- ---------------------------------------------------------------------
 create table ability_effect (
-    id               int primary key,
+    id               bigint generated always as identity primary key,
     ability_id       int         not null references ability (id),
-    effect_type      varchar(32) not null,
-    phase            varchar(32) not null,
-    multiplier_4096  int         not null,
-    condition_type   varchar(32),
+    seq              int         not null,
+    effect_target    varchar(32),
+    kind             varchar(16) not null,
+    multiplier_4096  int,
+    conditions       text,
+    phase            varchar(16),
     params           jsonb
 );
-create index idx_ability_effect_ability on ability_effect (ability_id);
+create index idx_ability_effect_ability on ability_effect (ability_id, seq);
+
+create table item_effect (
+    id               bigint generated always as identity primary key,
+    item_id          int         not null references item (id),
+    seq              int         not null,
+    effect_target    varchar(32),
+    kind             varchar(16) not null,
+    multiplier_4096  int,
+    conditions       text,
+    phase            varchar(16),
+    params           jsonb
+);
+create index idx_item_effect_item on item_effect (item_id, seq);
 
 -- ---------------------------------------------------------------------
--- フォーム変化(メガシンカ。将来 DYNAMAX / TERASTAL / Z技 等を kind で追加)
+-- フォーム変化(メガシンカ等。将来 DYNAMAX / TERASTAL / Z技 等を kind で追加)
+-- メガ行の元フォームは、シード読み込み時に dex_no・region・variant_key が一致する行から解決する
 -- ---------------------------------------------------------------------
 create table transformation (
     from_form_id     int         not null references pokemon_form (id),

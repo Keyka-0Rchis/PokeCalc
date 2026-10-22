@@ -36,3 +36,22 @@ dependencies {
 tasks.named('test') {
 	useJUnitPlatform()
 }
+
+// ---- シードCSVの検証(DB・Spring不要) -------------------------------------------
+// CSVを編集したら、まずこれを実行する。問題は「ファイル名:行番号」つきで表示される。
+tasks.register('validateSeed', JavaExec) {
+    group = 'seed'
+    description = 'db/seed のCSVを検証する(エラーがあれば失敗)'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.works.keyka.damagecalc.infrastructure.seed.SeedValidationMain'
+    args = ['validate', "${projectDir}/src/main/resources/db/seed"]
+}
+
+// 投入されるSQLを build/seed.sql に書き出す(中身の確認用)
+tasks.register('dumpSeedSql', JavaExec) {
+    group = 'seed'
+    description = '投入されるSQLを build/seed.sql に書き出す'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.works.keyka.damagecalc.infrastructure.seed.SeedValidationMain'
+    args = ['dump-sql', "${projectDir}/src/main/resources/db/seed", "${buildDir}/seed.sql"]
+}

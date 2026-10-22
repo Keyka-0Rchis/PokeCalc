@@ -1,4 +1,4 @@
-package main.java.com.works.keyka.damagecalc;
+package com.works.keyka.damagecalc;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
