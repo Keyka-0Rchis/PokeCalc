@@ -1,4 +1,4 @@
-```Marmeid
+```mermaid
 erDiagram
     POKEMON_FORM }o--|| POKEMON_FORM_TYPE : ""
     POKEMON_FORM }o--|| POKEMON_FORM_ABILITY : ""
